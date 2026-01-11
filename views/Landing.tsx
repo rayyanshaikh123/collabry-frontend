@@ -7,13 +7,11 @@ import { Button } from '../components/UIElements';
 import { ICONS } from '../constants';
 import { motion } from 'framer-motion';
 import { Highlighter } from '../components/ui/highlighter';
-import { ProgressiveBlur } from '../components/ui/progressive-blur';
 import Pricing from './Pricing';
 import { SmoothCursor } from '../components/ui/smooth-cursor';
 
 const LandingPage: React.FC<{ onGetStarted: () => void; onCycleTheme?: () => void }> = ({ onGetStarted, onCycleTheme }) => {
   const [isAnimating, setIsAnimating] = useState(false);
-  const [hasScrolled, setHasScrolled] = useState(false);
 
   const handleLogoClick = () => {
     if (onCycleTheme) {
@@ -23,31 +21,11 @@ const LandingPage: React.FC<{ onGetStarted: () => void; onCycleTheme?: () => voi
     }
   };
 
-  // Scroll detection for blur effect
-  useEffect(() => {
-    const handleScroll = () => {
-      const scrollTop = window.scrollY;
-      setHasScrolled(scrollTop > 50); // Show blur after scrolling 50px
-    };
-
-    window.addEventListener('scroll', handleScroll, { passive: true });
-    return () => window.removeEventListener('scroll', handleScroll);
-  }, []);
-
   
 
   return (
     <div className="min-h-screen bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100 overflow-hidden flex flex-col relative">
       <SmoothCursor />
-      {/* Progressive blur effects - only show when scrolling */}
-      <motion.div
-        initial={{ opacity: 0 }}
-        animate={{ opacity: hasScrolled ? 1 : 0 }}
-        transition={{ duration: 0.3, ease: "easeOut" }}
-        className="fixed bottom-0 left-0 right-0 z-50"
-      >
-        <ProgressiveBlur position="bottom" height="15vh" intensity="subtle" />
-      </motion.div>
       
       {/* Navbar */}
       <nav className="p-4 md:p-6 flex items-center justify-between max-w-7xl mx-auto w-full relative z-20">

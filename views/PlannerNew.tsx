@@ -193,7 +193,7 @@ const Planner: React.FC = () => {
 
       const createdTasks = await createBulkTasks.mutateAsync({
         planId: plan.id,
-        tasks: tasksToCreate,
+        tasks: tasksToCreate as any,
       });
 
       console.log('Tasks created successfully:', createdTasks.length);
@@ -260,7 +260,7 @@ const Planner: React.FC = () => {
 
       const createdTasks = await createBulkTasks.mutateAsync({
         planId: plan.id,
-        tasks: tasksToCreate,
+        tasks: tasksToCreate as any,
       });
 
       showAlert({ message: `✅ Plan "${plan.title}" created with ${createdTasks.length} tasks!`, type: 'success' });
@@ -683,18 +683,18 @@ const Planner: React.FC = () => {
                               <p className="text-sm text-slate-600 dark:text-slate-400 mt-1">{task.description}</p>
                             )}
                             <div className="flex items-center gap-2 mt-2 flex-wrap">
-                              <Badge variant="secondary" className="text-[10px]">
+                              <Badge variant="slate" className="text-[10px]">
                                 {formatDate(task.scheduledDate)}
                               </Badge>
                               {task.scheduledTime && (
-                                <Badge variant="secondary" className="text-[10px]">
+                                <Badge variant="slate" className="text-[10px]">
                                   {formatTime(task.scheduledTime)}
                                 </Badge>
                               )}
                               <span className={`px-2 py-0.5 rounded-md text-[10px] font-bold ${priorityColors[task.priority]}`}>
                                 {task.priority}
                               </span>
-                              <Badge variant="secondary" className="text-[10px]">
+                              <Badge variant="slate" className="text-[10px]">
                                 {task.duration} min
                               </Badge>
                               {task.topic && (

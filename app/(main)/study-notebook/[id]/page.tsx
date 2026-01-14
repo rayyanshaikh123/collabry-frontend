@@ -25,6 +25,9 @@ import { showError, showSuccess, showWarning, showInfo, showConfirm } from '../.
 
 const AI_ENGINE_URL = (process.env.NEXT_PUBLIC_AI_ENGINE_URL || 'http://localhost:8000').replace(/\/+$/, '');
 
+// Default quiz prompt constant
+const DEFAULT_QUIZ_PROMPT = 'Create a practice quiz with multiple choice questions about:';
+
 export default function StudyNotebookPage() {
   const params = useParams();
   const router = useRouter();
@@ -69,6 +72,7 @@ export default function StudyNotebookPage() {
   // Studio state
   const [selectedArtifact, setSelectedArtifact] = useState<ArtifactPanelType | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
+  
   // Local edits for artifact prompts (frontend-only)
   const [artifactEdits, setArtifactEdits] = useState<Record<string, { prompt?: string; numberOfQuestions?: number; difficulty?: string }>>({});
   const [editModalOpen, setEditModalOpen] = useState(false);
@@ -76,256 +80,216 @@ export default function StudyNotebookPage() {
   const [editPrompt, setEditPrompt] = useState('');
   const [editNumber, setEditNumber] = useState<number>(5);
   const [editDifficulty, setEditDifficulty] = useState<string>('medium');
-  const DEFAULT_QUIZ_PROMPT = 'Create a practice quiz with multiple choice questions about:';
 
-  // Source modals state
+  // Modal states
   const [addTextModalOpen, setAddTextModalOpen] = useState(false);
-  const [addNotesModalOpen, setAddNotesModalOpen] = useState(false);
-  const [addWebsiteModalOpen, setAddWebsiteModalOpen] = useState(false);
   const [textContent, setTextContent] = useState('');
   const [textTitle, setTextTitle] = useState('');
+  
+  const [addNotesModalOpen, setAddNotesModalOpen] = useState(false);
   const [notesContent, setNotesContent] = useState('');
   const [notesTitle, setNotesTitle] = useState('New Note');
+  
+  const [addWebsiteModalOpen, setAddWebsiteModalOpen] = useState(false);
   const [websiteUrl, setWebsiteUrl] = useState('');
 
-  // Auto-create notebook on mount if needed (only for 'default' route)
-  useEffect(() => {
-    if (notebookId === 'default' && !isLoadingNotebook && !creationAttempted.current && !createNotebook.isPending) {
-      creationAttempted.current = true;
-      createNotebook.mutate({ title: 'My Study Notebook' }, {
-        onSuccess: (response) => {
-          // Handle both wrapped and unwrapped responses
-          const newNotebookId = (response as any)?.data?._id || (response as any)?._id;
-          if (newNotebookId) {
-            // Small delay to ensure cache is updated
-            setTimeout(() => {
-              router.replace(`/study-notebook/${newNotebookId}`);
-            }, 100);
-          }
-        },
-        onError: (error) => {
-          console.error('Failed to create notebook:', error);
-          creationAttempted.current = false;
-        }
-      });
+  // Handler: Toggle Source
+  const handleToggleSource = async (sourceId: string) => {
+    try {
+      await toggleSource.mutateAsync(sourceId);
+    } catch (error) {
+      console.error('Failed to toggle source:', error);
+      showError('Failed to toggle source');
     }
-  }, [notebookId, isLoadingNotebook, createNotebook.isPending]);
-
-  // Load messages from AI session (only on initial mount)
-  const [messagesLoaded, setMessagesLoaded] = useState(false);
-  useEffect(() => {
-    if (sessionMessagesData && !isStreaming && !messagesLoaded) {
-      console.log('Loading messages from server:', sessionMessagesData);
-      const formattedMessages: ChatMessage[] = sessionMessagesData.map((msg: any) => ({
-        id: msg.timestamp,
-        role: msg.role as 'user' | 'assistant' | 'system',
-        content: msg.content,
-        timestamp: msg.timestamp,
-      }));
-      setLocalMessages(formattedMessages);
-      setMessagesLoaded(true);
-    }
-  }, [sessionMessagesData, isStreaming, messagesLoaded]);
-
-  // Source Handlers
-  const handleToggleSource = (id: string) => {
-    toggleSource.mutate(id);
   };
 
-  const handleAddSource = async (type: Source['type']) => {
-    if (type === 'pdf') {
+  // Handler: Add Source
+  const handleAddSource = (type: 'pdf' | 'text' | 'website' | 'notes') => {
+    if (type === 'text') {
+      setAddTextModalOpen(true);
+    } else if (type === 'notes') {
+      setAddNotesModalOpen(true);
+    } else if (type === 'website') {
+      setAddWebsiteModalOpen(true);
+    } else if (type === 'pdf') {
+      // Trigger file input
       const input = document.createElement('input');
       input.type = 'file';
-      input.accept = '.pdf,application/pdf';
+      input.accept = '.pdf';
       input.onchange = async (e) => {
         const file = (e.target as HTMLInputElement).files?.[0];
         if (file) {
-          const formData = new FormData();
-          formData.append('type', type);
-          formData.append('file', file);
-          formData.append('name', file.name);
           try {
-            await addSource.mutateAsync(formData);
-            showSuccess('PDF uploaded successfully!');
+            const formData = new FormData();
+            formData.append('file', file);
+            formData.append('type', 'pdf');
+            formData.append('name', file.name);
+            
+            await addSource.mutateAsync(formData as any);
+            showSuccess('PDF uploaded successfully');
           } catch (error) {
-            console.error('Failed to add PDF:', error);
-            showError('Failed to upload PDF. Please try again.');
+            console.error('Failed to upload PDF:', error);
+            showError('Failed to upload PDF');
           }
         }
       };
       input.click();
-    } else if (type === 'text') {
-      setTextContent('');
-      setTextTitle('');
-      setAddTextModalOpen(true);
-    } else if (type === 'notes') {
-      setNotesContent('');
-      setNotesTitle('New Note');
-      setAddNotesModalOpen(true);
-    } else if (type === 'website') {
-      setWebsiteUrl('');
-      setAddWebsiteModalOpen(true);
     }
   };
 
+  // Handler: Submit Text
   const handleSubmitText = async () => {
     if (!textContent.trim()) {
-      showWarning('Please enter some text content.');
+      showWarning('Please enter some content');
       return;
     }
     if (!textTitle.trim()) {
-      showWarning('Please enter a title.');
+      showWarning('Please enter a title');
       return;
     }
-    const formData = new FormData();
-    formData.append('type', 'text');
-    formData.append('content', textContent);
-    formData.append('name', textTitle);
+
     try {
-      await addSource.mutateAsync(formData);
+      await addSource.mutateAsync({
+        type: 'text',
+        name: textTitle,
+        content: textContent,
+      } as any);
+      
       setAddTextModalOpen(false);
       setTextContent('');
       setTextTitle('');
-      showSuccess('Text source added successfully!');
+      showSuccess('Text source added successfully');
     } catch (error) {
-      console.error('Failed to add text:', error);
-      showError('Failed to add text source. Please try again.');
+      console.error('Failed to add text source:', error);
+      showError('Failed to add text source');
     }
   };
 
+  // Handler: Submit Notes
   const handleSubmitNotes = async () => {
     if (!notesContent.trim()) {
-      showWarning('Please enter some note content.');
+      showWarning('Please enter some notes');
       return;
     }
-    const formData = new FormData();
-    formData.append('type', 'notes');
-    formData.append('content', notesContent);
-    formData.append('name', notesTitle || 'New Note');
+
     try {
-      await addSource.mutateAsync(formData);
+      await addSource.mutateAsync({
+        type: 'notes',
+        name: notesTitle || 'New Note',
+        content: notesContent,
+      } as any);
+      
       setAddNotesModalOpen(false);
       setNotesContent('');
       setNotesTitle('New Note');
-      showSuccess('Note added successfully!');
+      showSuccess('Note added successfully');
     } catch (error) {
       console.error('Failed to add note:', error);
-      showError('Failed to add note. Please try again.');
+      showError('Failed to add note');
     }
   };
 
+  // Handler: Submit Website
   const handleSubmitWebsite = async () => {
     if (!websiteUrl.trim()) {
-      showWarning('Please enter a website URL.');
+      showWarning('Please enter a URL');
       return;
     }
+
     try {
-      // Validate URL
-      const url = new URL(websiteUrl);
-      const formData = new FormData();
-      formData.append('type', 'website');
-      formData.append('url', url.toString());
-      formData.append('name', url.hostname);
-      await addSource.mutateAsync(formData);
+      await addSource.mutateAsync({
+        type: 'website',
+        url: websiteUrl,
+        name: websiteUrl,
+      } as any);
+      
       setAddWebsiteModalOpen(false);
       setWebsiteUrl('');
-      showSuccess('Website added successfully!');
+      showSuccess('Website added successfully');
     } catch (error) {
-      if (error instanceof TypeError) {
-        showError('Please enter a valid URL (e.g., https://example.com)');
-      } else {
-        console.error('Failed to add website:', error);
-        showError('Failed to add website. Please try again.');
-      }
+      console.error('Failed to add website:', error);
+      showError('Failed to add website');
     }
   };
 
-  const handleRemoveSource = (id: string) => {
+  // Handler: Remove Source
+  const handleRemoveSource = async (sourceId: string) => {
     showConfirm(
       'Are you sure you want to remove this source?',
-      () => removeSource.mutate(id),
+      async () => {
+        try {
+          await removeSource.mutateAsync(sourceId);
+          showSuccess('Source removed');
+        } catch (error) {
+          console.error('Failed to remove source:', error);
+          showError('Failed to remove source');
+        }
+      },
       'Remove Source',
       'Remove',
       'Cancel'
     );
   };
 
-  // Chat Handlers
+  // Handler: Send Message
   const handleSendMessage = async (message: string) => {
-    if (!notebook?.aiSessionId) {
-      showError('Chat session not initialized. Please refresh the page.');
-      return;
-    }
+    if (!notebook || !message.trim()) return;
 
-    // Add user message locally
     const userMessage: ChatMessage = {
-      id: Date.now().toString(),
+      id: `user-${Date.now()}`,
       role: 'user',
       content: message,
-      timestamp: new Date().toISOString(),
+      timestamp: new Date().toISOString()
     };
-    
-    console.log('Adding user message:', userMessage);
-    setLocalMessages((prev) => {
-      const updated = [...prev, userMessage];
-      console.log('LocalMessages after user:', updated);
-      return updated;
-    });
+
+    setLocalMessages((prev) => [...prev, userMessage]);
     setIsChatLoading(true);
     setIsStreaming(true);
 
-    // Add loading message
-    const loadingId = (Date.now() + 1).toString();
+    const loadingId = `assistant-${Date.now()}`;
     const loadingMessage: ChatMessage = {
       id: loadingId,
       role: 'assistant',
       content: '',
       timestamp: new Date().toISOString(),
-      isLoading: true,
+      isLoading: true
     };
-    setLocalMessages((prev) => {
-      const updated = [...prev, loadingMessage];
-      console.log('LocalMessages after loading:', updated);
-      return updated;
-    });
+
+    setLocalMessages((prev) => [...prev, loadingMessage]);
 
     try {
-      // Get auth token
-      const authStorage = localStorage.getItem('auth-storage');
-      let token = '';
-      if (authStorage) {
-        const { state } = JSON.parse(authStorage);
-        token = state?.accessToken || '';
+      // Get selected source IDs
+      const selectedSourceIds = notebook.sources
+        .filter(s => s.selected)
+        .map(s => s._id);
+
+      // Call streaming API (use sessions streaming endpoint)
+      // Include Authorization header from localStorage if available
+      let authToken = '';
+      try {
+        const authStorage = localStorage.getItem('auth-storage');
+        if (authStorage) {
+          const { state } = JSON.parse(authStorage);
+          authToken = state?.accessToken || '';
+        }
+      } catch (e) {
+        console.debug('Could not read auth token from storage', e);
       }
 
-      // Get selected sources context
-      const selectedSources = notebook.sources.filter((s) => s.selected);
-      const useRag = selectedSources.length > 0;
-      const selectedSourceIds = selectedSources.map((s) => s._id);
-      
-      console.log('💬 Chat request:', {
-        selectedSources: selectedSources.length,
-        sourceIds: selectedSourceIds,
-        useRag
-      });
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json'
+      };
+      if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
 
-      // Stream response using POST
-      const response = await fetch(
-        `${AI_ENGINE_URL}/ai/sessions/${notebook.aiSessionId}/chat/stream`,
-        {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${token}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            message: message,
-            use_rag: useRag,
-            session_id: notebook.aiSessionId,
-            source_ids: selectedSourceIds
-          })
-        }
-      );
+      const response = await fetch(`${AI_ENGINE_URL}/ai/sessions/${notebook.aiSessionId}/chat/stream`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          message,
+          session_id: notebook.aiSessionId,
+          source_ids: selectedSourceIds
+        })
+      });
 
       if (!response.ok) {
         throw new Error('Failed to get AI response');
@@ -334,6 +298,78 @@ export default function StudyNotebookPage() {
       const reader = response.body?.getReader();
       const decoder = new TextDecoder();
       let fullResponse = '';
+
+      // Helper: extract answer text from embedded JSON tool output
+      const extractAnswerFromJson = (text: string): string | null => {
+        try {
+          const trimmed = text.trim();
+
+          if (trimmed.includes('"answer"')) {
+            const answerIndex = trimmed.indexOf('"answer"');
+            if (answerIndex > 0) {
+              let startIndex = trimmed.lastIndexOf('{', answerIndex);
+              if (startIndex >= 0) {
+                let braceCount = 0;
+                let endIndex = -1;
+                for (let i = startIndex; i < trimmed.length; i++) {
+                  if (trimmed[i] === '{') braceCount++;
+                  if (trimmed[i] === '}') {
+                    braceCount--;
+                    if (braceCount === 0) {
+                      endIndex = i + 1;
+                      break;
+                    }
+                  }
+                }
+
+                if (endIndex > startIndex) {
+                  const jsonStr = trimmed.substring(startIndex, endIndex);
+                  try {
+                    const parsed = JSON.parse(jsonStr);
+                    if (parsed.tool === null && parsed.answer) {
+                      let result = parsed.answer;
+                      result = result.replace(/\n\nFollow-up questions?:[\s\S]*$/i, '');
+
+                      if (parsed.follow_up_questions && Array.isArray(parsed.follow_up_questions) && parsed.follow_up_questions.length > 0) {
+                        result += '\n\n📝 **Follow-up questions to deepen your understanding:**';
+                        parsed.follow_up_questions.forEach((q: string, i: number) => {
+                          result += `\n${i + 1}. ${q}`;
+                        });
+                      }
+                      return result;
+                    }
+                  } catch (e) {
+                    // JSON parse failed
+                  }
+                }
+              }
+            }
+          }
+
+          if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
+            try {
+              const parsed = JSON.parse(trimmed);
+              if (parsed.tool === null && parsed.answer) {
+                let result = parsed.answer;
+                result = result.replace(/\n\nFollow-up questions?:[\s\S]*$/i, '');
+
+                if (parsed.follow_up_questions && Array.isArray(parsed.follow_up_questions) && parsed.follow_up_questions.length > 0) {
+                  result += '\n\n📝 **Follow-up questions to deepen your understanding:**';
+                  parsed.follow_up_questions.forEach((q: string, i: number) => {
+                    result += `\n${i + 1}. ${q}`;
+                  });
+                }
+                return result;
+              }
+            } catch (e) {
+              // Parse failed
+            }
+          }
+        } catch (e) {
+          // Extraction failed
+        }
+        return null;
+      };
 
       if (reader) {
         while (true) {
@@ -345,107 +381,22 @@ export default function StudyNotebookPage() {
 
           for (const line of lines) {
             if (line.startsWith('data: ')) {
-              const data = line.slice(6); // Don't trim - preserve spaces
+              const data = line.slice(6);
               
-              // Skip empty data or done events
               if (!data || data.trim() === '[DONE]') continue;
               
-              // Convert escaped newlines back to actual newlines for markdown
               const processedData = data.replace(/\\n/g, '\n');
-              
-              console.log('Received chunk:', JSON.stringify(data));
               fullResponse += processedData;
               
-              // Try to extract answer from JSON if the full response looks like JSON
               let displayContent = fullResponse;
               
-              // Function to extract answer from JSON - more robust
-              const extractAnswerFromJson = (text: string): string | null => {
-                try {
-                  const trimmed = text.trim();
-                  
-                  // Strategy 1: Find JSON object with answer field using regex
-                  if (trimmed.includes('"answer"')) {
-                    // Try to find the JSON object - look for opening { before "answer" and closing } after
-                    const answerIndex = trimmed.indexOf('"answer"');
-                    if (answerIndex > 0) {
-                      // Find the opening brace before "answer"
-                      let startIndex = trimmed.lastIndexOf('{', answerIndex);
-                      if (startIndex >= 0) {
-                        // Find the matching closing brace
-                        let braceCount = 0;
-                        let endIndex = -1;
-                        for (let i = startIndex; i < trimmed.length; i++) {
-                          if (trimmed[i] === '{') braceCount++;
-                          if (trimmed[i] === '}') {
-                            braceCount--;
-                            if (braceCount === 0) {
-                              endIndex = i + 1;
-                              break;
-                            }
-                          }
-                        }
-                        
-                        if (endIndex > startIndex) {
-                          const jsonStr = trimmed.substring(startIndex, endIndex);
-                          try {
-                            const parsed = JSON.parse(jsonStr);
-                            if (parsed.tool === null && parsed.answer) {
-                              let result = parsed.answer;
-                              // Remove any duplicate follow-up questions from answer text
-                              result = result.replace(/\n\nFollow-up questions?:[\s\S]*$/i, '');
-                              
-                              // Format follow-up questions if present
-                              if (parsed.follow_up_questions && Array.isArray(parsed.follow_up_questions) && parsed.follow_up_questions.length > 0) {
-                                result += '\n\n📝 **Follow-up questions to deepen your understanding:**';
-                                parsed.follow_up_questions.forEach((q: string, i: number) => {
-                                  result += `\n${i + 1}. ${q}`;
-                                });
-                              }
-                              return result;
-                            }
-                          } catch (e) {
-                            // JSON parse failed, try next strategy
-                          }
-                        }
-                      }
-                    }
-                  }
-                  
-                  // Strategy 2: Try parsing the whole trimmed text if it's a complete JSON object
-                  if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
-                    try {
-                      const parsed = JSON.parse(trimmed);
-                      if (parsed.tool === null && parsed.answer) {
-                        let result = parsed.answer;
-                        // Remove any duplicate follow-up questions from answer text
-                        result = result.replace(/\n\nFollow-up questions?:[\s\S]*$/i, '');
-                        
-                        if (parsed.follow_up_questions && Array.isArray(parsed.follow_up_questions) && parsed.follow_up_questions.length > 0) {
-                          result += '\n\n📝 **Follow-up questions to deepen your understanding:**';
-                          parsed.follow_up_questions.forEach((q: string, i: number) => {
-                            result += `\n${i + 1}. ${q}`;
-                          });
-                        }
-                        return result;
-                      }
-                    } catch (e) {
-                      // Parse failed
-                    }
-                  }
-                } catch (e) {
-                  // Extraction failed
-                }
-                return null;
-              };
+              // Extract answer from JSON if present (helper moved above)
               
-              // Try to extract answer from JSON
               const extracted = extractAnswerFromJson(fullResponse);
               if (extracted) {
                 displayContent = extracted;
               }
               
-              // Update message in real-time
               setLocalMessages((prev) =>
                 prev.map((msg) =>
                   msg.id === loadingId
@@ -454,89 +405,9 @@ export default function StudyNotebookPage() {
                 )
               );
             } else if (line.startsWith('event: done')) {
-              // Stream completed - final JSON extraction
-              console.log('Stream done. Full response:', fullResponse);
-              
-              // Final attempt to extract answer from JSON - robust extraction
-              const extractAnswerFromJson = (text: string): string | null => {
-                try {
-                  const trimmed = text.trim();
-                  
-                  // Strategy 1: Find JSON object with answer field using brace matching
-                  if (trimmed.includes('"answer"')) {
-                    const answerIndex = trimmed.indexOf('"answer"');
-                    if (answerIndex > 0) {
-                      let startIndex = trimmed.lastIndexOf('{', answerIndex);
-                      if (startIndex >= 0) {
-                        let braceCount = 0;
-                        let endIndex = -1;
-                        for (let i = startIndex; i < trimmed.length; i++) {
-                          if (trimmed[i] === '{') braceCount++;
-                          if (trimmed[i] === '}') {
-                            braceCount--;
-                            if (braceCount === 0) {
-                              endIndex = i + 1;
-                              break;
-                            }
-                          }
-                        }
-                        
-                        if (endIndex > startIndex) {
-                          const jsonStr = trimmed.substring(startIndex, endIndex);
-                          try {
-                            const parsed = JSON.parse(jsonStr);
-                            if (parsed.tool === null && parsed.answer) {
-                              let result = parsed.answer;
-                              // Remove any duplicate follow-up questions from answer text
-                              result = result.replace(/\n\nFollow-up questions?:[\s\S]*$/i, '');
-                              
-                              if (parsed.follow_up_questions && Array.isArray(parsed.follow_up_questions) && parsed.follow_up_questions.length > 0) {
-                                result += '\n\n📝 **Follow-up questions to deepen your understanding:**';
-                                parsed.follow_up_questions.forEach((q: string, i: number) => {
-                                  result += `\n${i + 1}. ${q}`;
-                                });
-                              }
-                              return result;
-                            }
-                          } catch (e) {
-                            // JSON parse failed
-                          }
-                        }
-                      }
-                    }
-                  }
-                  
-                  // Strategy 2: Try parsing the whole trimmed text
-                  if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
-                    try {
-                      const parsed = JSON.parse(trimmed);
-                      if (parsed.tool === null && parsed.answer) {
-                        let result = parsed.answer;
-                        // Remove any duplicate follow-up questions from answer text
-                        result = result.replace(/\n\nFollow-up questions?:[\s\S]*$/i, '');
-                        
-                        if (parsed.follow_up_questions && Array.isArray(parsed.follow_up_questions) && parsed.follow_up_questions.length > 0) {
-                          result += '\n\n📝 **Follow-up questions to deepen your understanding:**';
-                          parsed.follow_up_questions.forEach((q: string, i: number) => {
-                            result += `\n${i + 1}. ${q}`;
-                          });
-                        }
-                        return result;
-                      }
-                    } catch (e) {
-                      // Parse failed
-                    }
-                  }
-                } catch (e) {
-                  // Extraction failed
-                }
-                return null;
-              };
-              
               const extracted = extractAnswerFromJson(fullResponse);
               if (extracted) {
                 fullResponse = extracted;
-                // Update final message with extracted content
                 setLocalMessages((prev) =>
                   prev.map((msg) =>
                     msg.id === loadingId
@@ -545,7 +416,6 @@ export default function StudyNotebookPage() {
                   )
                 );
               }
-              
               break;
             }
           }
@@ -569,31 +439,6 @@ export default function StudyNotebookPage() {
     }
   };
 
-  const handleClearChat = () => {
-    showConfirm(
-      'Are you sure you want to clear the chat history?',
-      () => setLocalMessages([]),
-      'Clear Chat History',
-      'Clear',
-      'Cancel'
-    );
-  };
-
-  const handleRegenerateResponse = () => {
-    if (localMessages.length < 2) return;
-    
-    // Get the last user message
-    for (let i = localMessages.length - 1; i >= 0; i--) {
-      if (localMessages[i].role === 'user') {
-        // Remove messages after this one
-        setLocalMessages(prev => prev.slice(0, i + 1));
-        // Resend the message
-        handleSendMessage(localMessages[i].content);
-        break;
-      }
-    }
-  };
-
   // Studio Handlers
   const handleGenerateArtifact = async (type: ArtifactType) => {
     if (!notebook) return;
@@ -607,38 +452,48 @@ export default function StudyNotebookPage() {
     setIsGenerating(true);
 
     try {
+      const topics = selectedSources
+        .map((s) => s.name.replace(/\.(pdf|txt|md)$/i, ''))
+        .join(', ');
+
       if (type === 'course-finder') {
-        // Extract topics from selected sources
-        const topics = selectedSources
-          .map((s) => s.name.replace(/\.(pdf|txt|md)$/i, ''))
-          .join(', ');
+        const lines: string[] = [];
+        lines.push('[COURSE_FINDER_REQUEST]');
+        lines.push('');
+        lines.push(`Find the best online courses about "${topics}" from the internet.`);
+        lines.push('');
+        lines.push('**CRITICAL: YOU MUST USE WEB_SEARCH TOOL**');
+        lines.push(`1. Call the web_search tool with queries such as: "best courses ${topics}", "${topics} online course", or "${topics} tutorial course"`);
+        lines.push('2. Do NOT answer from model memory — web_search must be used first.');
+        lines.push('');
+        lines.push('**EXTRACTION REQUIREMENTS:**');
+        lines.push('From the web_search tool results, extract for EACH course (where available):');
+        lines.push('- Course title (exact name from the course page)');
+        lines.push('- Course URL (direct course page URL)');
+        lines.push('- Platform name (Coursera, Udemy, edX, Codecademy, etc.)');
+        lines.push('- Rating (format as X.X/5 if available)');
+        lines.push('- Price (format as $XX or "Free" if available)');
+        lines.push('');
+        lines.push('**OUTPUT FORMAT - MANDATORY:**');
+        lines.push('Return a JSON object exactly like: {"tool": null, "answer": "<COURSE_LIST>"}');
+        lines.push('Where <COURSE_LIST> is the courses each on its own line, formatted as:');
+        lines.push('[Course Title](https://course.url) - Platform: X | Rating: X.X/5 | Price: $X');
+        lines.push('');
+        lines.push('Requirements:');
+        lines.push('- Provide 5-8 courses when possible');
+        lines.push('- Use real course URLs (not search result pages)');
+        lines.push('- One course per line, no extra commentary');
+        lines.push('');
+        lines.push('Now call web_search tool and format the results exactly as specified.');
 
-        // Simplified prompt with clear output marker
-        const message = `###COURSE_FINDER###
+        const message = lines.join('\n');
 
-Use web_search tool to find online courses about: ${topics}
-
-Search for "best ${topics} courses online" or "${topics} tutorial course"
-
-Output format - each course on one line:
-[Course Name](URL) - Platform: X | Rating: X/5 | Price: $X
-
-Example:
-[Data Structures Course](https://coursera.org/ds) - Platform: Coursera | Rating: 4.7/5 | Price: Free
-
-Find 5-8 courses. Output ONLY the course list, nothing else.
-
-###END_INSTRUCTION###`;
-        
         handleSendMessage(message);
         setIsGenerating(false);
         return;
-      } else if (type === 'flashcards') {
-        // Generate flashcards from selected sources
-        const topics = selectedSources
-          .map((s) => s.name.replace(/\.(pdf|txt|md)$/i, ''))
-          .join(', ');
+      }
 
+      if (type === 'flashcards') {
         const message = `Create flashcards for studying: ${topics}
 
 Use the content from the selected sources to create study flashcards.
@@ -649,15 +504,9 @@ Output ONLY a JSON object with this exact structure (no markdown, no code blocks
   "cards": [
     {
       "id": "card-1",
-      "front": "What is...?",
+      "front": "What is...",
       "back": "The answer is...",
       "category": "Basics"
-    },
-    {
-      "id": "card-2",
-      "front": "Explain...",
-      "back": "Detailed explanation...",
-      "category": "Advanced"
     }
   ]
 }
@@ -669,18 +518,14 @@ Requirements:
 - Category: Group related cards (Basics, Definitions, Applications, etc.)
 - Cover key concepts, definitions, processes, and applications
 - Make questions specific and answers clear
-- Output ONLY the JSON object, nothing else`;
+Output ONLY the JSON object, nothing else.`;
 
         handleSendMessage(message);
         setIsGenerating(false);
         return;
-      } else if (type === 'quiz') {
-        // Extract topics from selected sources
-        const topics = selectedSources
-          .map((s) => s.name.replace(/\.(pdf|txt|md)$/i, ''))
-          .join(', ');
+      }
 
-        // Get user settings
+      if (type === 'quiz') {
         const persistedEdits = artifactEdits['action-quiz'] || {};
         const liveEdits = (editModalOpen && editingArtifactId === 'action-quiz')
           ? { prompt: editPrompt, numberOfQuestions: editNumber, difficulty: editDifficulty }
@@ -692,7 +537,6 @@ Requirements:
           ? actionEdits.prompt
           : DEFAULT_QUIZ_PROMPT;
 
-        // Simplified prompt with clear markers
         const message = `###QUIZ_GENERATOR###
 
 ${original} ${topics}
@@ -711,32 +555,22 @@ D) [option]
 Answer: A
 Explanation: [why A is correct]
 
-Question 2: [question text]?
-A) [option]
-B) [option]
-C) [option]
-D) [option]
-Answer: B
-Explanation: [why B is correct]
-
 Rules:
+- Strictly follow the format above
+- Questions must be relevant to the source material
+- Options should be plausible to ensure challenge
 - Generate exactly ${numQuestions} questions
 - Answer must be single letter (A, B, C, or D)
 - Base questions on the selected source material
-- Output ONLY the questions, no extra text
-
+Output ONLY the questions, no extra text
 ###END_INSTRUCTION###`;
 
         handleSendMessage(message);
         setIsGenerating(false);
         return;
-      } else if (type === 'mindmap') {
-        // Extract topics from selected sources
-        const topics = selectedSources
-          .map((s) => s.name.replace(/\.(pdf|txt|md)$/i, ''))
-          .join(', ');
+      }
 
-        // Simplified prompt with clear JSON output
+      if (type === 'mindmap') {
         const message = `Create a mind map about: ${topics}
 
 Use the content from the selected sources to build the mind map structure.
@@ -744,16 +578,9 @@ Use the content from the selected sources to build the mind map structure.
 Output ONLY a JSON object with this exact structure (no markdown, no code blocks, no extra text):
 {
   "nodes": [
-    {"id": "root", "label": "${topics}", "level": 0},
-    {"id": "node-1", "label": "Subtopic 1", "level": 1},
-    {"id": "node-2", "label": "Subtopic 2", "level": 1},
-    {"id": "node-1a", "label": "Detail 1.1", "level": 2}
+    {"id": "root", "label": "${topics}", "level": 0}
   ],
-  "edges": [
-    {"from": "root", "to": "node-1"},
-    {"from": "root", "to": "node-2"},
-    {"from": "node-1", "to": "node-1a"}
-  ]
+  "edges": []
 }
 
 Requirements:
@@ -762,43 +589,38 @@ Requirements:
 - Labels should be 2-5 words extracted from source material
 - Connect related concepts with edges (parent-child relationships)
 - Each node id must be unique (use "node-" prefix with numbers)
-- Output ONLY the JSON object, nothing else`;
+Output ONLY the JSON object, nothing else.`;
 
         handleSendMessage(message);
         setIsGenerating(false);
         return;
-      } else if (type === 'reports') {
-        // Generate comprehensive study report
-        const topics = selectedSources
-          .map((s) => s.name.replace(/\.(pdf|txt|md)$/i, ''))
-          .join(', ');
+      }
 
+      if (type === 'reports') {
         const message = `Generate a comprehensive study report for: ${topics}
 
 Analyze the selected source materials and create a structured report with the following sections:
 
-1. **Executive Summary** (2-3 paragraphs)
-2. **Key Concepts** (5-10 main concepts with explanations)
-3. **Learning Objectives** (What should be mastered)
-4. **Detailed Analysis** (Deep dive into important topics)
-5. **Practical Applications** (Real-world use cases)
-6. **Study Recommendations** (How to learn this effectively)
-7. **Assessment Criteria** (What to focus on for testing)
-8. **Additional Resources** (Recommended readings/videos)
+1. Executive Summary (2-3 paragraphs)
+2. Key Concepts (5-10 main concepts with explanations)
+3. Learning Objectives (What should be mastered)
+4. Detailed Analysis (Deep dive into important topics)
+5. Practical Applications (Real-world use cases)
+6. Study Recommendations (How to learn this effectively)
+7. Assessment Criteria (What to focus on for testing)
+8. Additional Resources (Recommended readings/videos)
 
 Format the report in clear markdown with headers, bullet points, and emphasis.
 Base all content on the actual source material provided.
-Make it comprehensive but readable (aim for 800-1200 words).`;
+Make it comprehensive but readable (aim for 800-1200 words).
+Output ONLY the markdown report, nothing else.`;
 
         handleSendMessage(message);
         setIsGenerating(false);
         return;
-      } else if (type === 'infographic') {
-        // Generate infographic data structure
-        const topics = selectedSources
-          .map((s) => s.name.replace(/\.(pdf|txt|md)$/i, ''))
-          .join(', ');
+      }
 
+      if (type === 'infographic') {
         const message = `Create an infographic data structure for: ${topics}
 
 Analyze the selected sources and extract key visual elements.
@@ -807,31 +629,7 @@ Output ONLY a JSON object with this structure (no markdown, no code blocks):
 {
   "title": "Main topic title",
   "subtitle": "Brief description",
-  "sections": [
-    {
-      "id": "section-1",
-      "title": "Section Title",
-      "icon": "📚",
-      "stats": [
-        {"label": "Key Stat 1", "value": "70%", "color": "blue"},
-        {"label": "Key Stat 2", "value": "30%", "color": "green"}
-      ],
-      "keyPoints": [
-        "Important point 1",
-        "Important point 2",
-        "Important point 3"
-      ]
-    }
-  ],
-  "timeline": [
-    {"year": "2020", "event": "Key milestone", "description": "Brief desc"},
-    {"year": "2021", "event": "Another event", "description": "Brief desc"}
-  ],
-  "comparisons": [
-    {"category": "Aspect 1", "optionA": "Value A", "optionB": "Value B"},
-    {"category": "Aspect 2", "optionA": "Value A", "optionB": "Value B"}
-  ],
-  "conclusion": "Final takeaway message"
+  "sections": []
 }
 
 Requirements:
@@ -840,15 +638,14 @@ Requirements:
 - Use relevant emojis for icons
 - Timeline events should be chronological if source has historical context
 - Comparisons should highlight key differences
-- Base everything on actual source material
-- Output ONLY the JSON object`;
+Output ONLY the JSON object.`;
 
         handleSendMessage(message);
         setIsGenerating(false);
         return;
-      } else {
-        showInfo(`${type} generation coming soon!`);
       }
+
+      showInfo(`${type} generation coming soon!`);
     } catch (error) {
       console.error('Failed to generate artifact:', error);
       showError('Failed to generate artifact. Please try again.');
@@ -857,12 +654,32 @@ Requirements:
     }
   };
 
+  const handleClearChat = () => {
+    showConfirm(
+      'Are you sure you want to clear the chat history?',
+      () => setLocalMessages([]),
+      'Clear Chat History',
+      'Clear',
+      'Cancel'
+    );
+  };
+
+  const handleRegenerateResponse = () => {
+    if (localMessages.length < 2) return;
+    
+    for (let i = localMessages.length - 1; i >= 0; i--) {
+      if (localMessages[i].role === 'user') {
+        setLocalMessages(prev => prev.slice(0, i + 1));
+        handleSendMessage(localMessages[i].content);
+        break;
+      }
+    }
+  };
+
   const handleSaveQuizToStudio = async (questions: any[]) => {
     if (!notebook) return;
 
     try {
-      // First, create the quiz
-      // Try to preserve user-edited metadata (number/difficulty/prompt) when saving
       const savedEdits = artifactEdits['action-quiz'] || (selectedArtifact?.data as any) || {};
       const displayCount = savedEdits.numberOfQuestions || questions.length;
       const quizDifficulty = savedEdits.difficulty || 'medium';
@@ -871,23 +688,20 @@ Requirements:
       const quizData = {
         title: `Practice Quiz - ${displayCount} Questions`,
         description: quizPrompt || 'Generated from study session',
-        subject: notebook.title || 'Study Notes', // Add required subject field
+        subject: notebook.title || 'Study Notes',
         questions: questions.map((q, index) => {
           const options = Array.isArray(q.options) ? q.options : (Array.isArray(q.choices) ? q.choices : []);
 
-          // Determine correct answer text safely
           let correctAnswerText = '';
           if (typeof q.correctAnswer === 'number') {
             correctAnswerText = options[q.correctAnswer] ?? '';
           } else if (typeof q.correctAnswer === 'string') {
-            // If it's an option value
             if (options.includes(q.correctAnswer)) {
               correctAnswerText = q.correctAnswer;
             } else {
-              // Might be letter A/B/C/D — convert to index
               const letter = q.correctAnswer.trim().toUpperCase();
               if (/^[A-Z]$/.test(letter)) {
-                const idx = letter.charCodeAt(0) - 65; // A -> 0
+                const idx = letter.charCodeAt(0) - 65;
                 correctAnswerText = options[idx] ?? q.correctAnswer ?? '';
               } else {
                 correctAnswerText = q.answer ?? q.correctAnswer ?? '';
@@ -897,13 +711,12 @@ Requirements:
             correctAnswerText = q.answer;
           }
 
-          // Find the index of the correct answer in options
           const correctAnswerIndex = options.findIndex((opt: string) => opt === correctAnswerText);
           
           return {
             question: q.question,
             options,
-            correctAnswer: correctAnswerIndex >= 0 ? correctAnswerIndex : 0, // Use index, default to 0 if not found
+            correctAnswer: correctAnswerIndex >= 0 ? correctAnswerIndex : 0,
             explanation: q.explanation || '',
             difficulty: (q.difficulty as any) || quizDifficulty,
             points: 1,
@@ -918,10 +731,8 @@ Requirements:
         }
       };
 
-      // Create the quiz in the database
       const createdQuiz = await createQuiz.mutateAsync(quizData);
 
-      // Now link it to the notebook
       await linkArtifact.mutateAsync({
         type: 'quiz',
         referenceId: createdQuiz._id,
@@ -939,21 +750,17 @@ Requirements:
     if (!notebook || !('title' in notebook)) return;
 
     try {
-      // Generate mindmap using the backend service
-      // Note: The backend will create the mindmap structure from the nodes/edges
       const result = await generateMindMap.mutateAsync({
         topic: `${notebook.title} - Study Notes`,
         maxNodes: mindmap.nodes.length,
-        useRag: false, // Already generated from RAG context
-        save: true, // Save to database
-        subjectId: '', // Will be handled by backend if needed
-      } as any); // Type assertion needed due to backend API differences
+        useRag: false,
+        save: true,
+        subjectId: '',
+      } as any);
 
-      // The backend should return the saved mindmap with _id
       const savedId = (result && (result.savedMapId || (result as any)._id || (result as any).data?._id)) || null;
 
       if (savedId) {
-        // Link to notebook artifact
         await linkArtifact.mutateAsync({
           type: 'mindmap',
           referenceId: savedId,
@@ -961,7 +768,6 @@ Requirements:
         });
         showSuccess('Mind map saved to Studio successfully!');
       } else {
-        // Fallback: Try to save directly via API
         showWarning('Mind map generated but could not be saved. Please try again.');
       }
     } catch (error) {
@@ -974,12 +780,11 @@ Requirements:
     if (!notebook || !('title' in notebook)) return;
 
     try {
-      // Save infographic data directly to notebook artifacts
       await linkArtifact.mutateAsync({
         type: 'infographic',
-        referenceId: `infographic-${Date.now()}`, // Generate unique ID
+        referenceId: `infographic-${Date.now()}`,
         title: infographic.title || `Infographic - ${notebook.title}`,
-        data: infographic, // Store the full infographic data
+        data: infographic,
       });
 
       showSuccess('Infographic saved to Studio successfully!');
@@ -993,12 +798,11 @@ Requirements:
     if (!notebook || !('title' in notebook)) return;
 
     try {
-      // Save flashcard set data directly to notebook artifacts
       await linkArtifact.mutateAsync({
         type: 'flashcards',
-        referenceId: `flashcards-${Date.now()}`, // Generate unique ID
+        referenceId: `flashcards-${Date.now()}`,
         title: flashcardSet.title || `Flashcards - ${notebook.title}`,
-        data: flashcardSet, // Store the full flashcard set
+        data: flashcardSet,
       });
 
       showSuccess('Flashcards saved to Studio successfully!');
@@ -1010,7 +814,6 @@ Requirements:
 
   const openEditModal = (artifactId: string) => {
     const existing = artifactEdits[artifactId] || {};
-    // Prefer data embedded in the notebook artifact if available
     const notebookArtifact = notebook?.artifacts?.find((a) => a._id === artifactId);
     const artifactData = (notebookArtifact as any)?.data || {};
     setEditingArtifactId(artifactId);
@@ -1032,7 +835,7 @@ Requirements:
         difficulty: editDifficulty,
       }
     }));
-    // If the edited artifact is currently selected in the viewer, update that state as well
+    
     if (selectedArtifact?.id === editingArtifactId) {
       setSelectedArtifact((prev) => prev ? ({
         ...prev,
@@ -1056,11 +859,9 @@ Requirements:
       'Are you sure you want to delete this artifact?',
       async () => {
         try {
-          // Clear viewer first to avoid React unmount ordering issues
           if (selectedArtifact?.id === artifactId) {
             setSelectedArtifact(null);
           }
-          // Fire mutation (don't rely on UI state during awaiting)
           await unlinkArtifact.mutateAsync(artifactId);
           showSuccess('Artifact deleted');
         } catch (error) {
@@ -1082,10 +883,9 @@ Requirements:
     
     const artifact = notebook.artifacts.find((a) => a._id === id);
     if (artifact) {
-      // Convert service Artifact to component Artifact type
       const artifactType = (artifact.type === 'quiz' || artifact.type === 'mindmap' || artifact.type === 'flashcards') 
         ? artifact.type 
-        : 'quiz' as ArtifactType; // Default fallback
+        : 'quiz' as ArtifactType;
       setSelectedArtifact({
         id: artifact._id,
         type: artifactType,
@@ -1136,7 +936,7 @@ Requirements:
         type: s.type as SourcePanelType['type'],
         name: s.name,
         size: s.size ? `${(s.size / 1024 / 1024).toFixed(2)} MB` : undefined,
-        dateAdded: 'Just now', // Backend doesn't include timestamp in embedded source
+        dateAdded: 'Just now',
         selected: s.selected,
         url: s.url
       }))}
@@ -1315,9 +1115,6 @@ Requirements:
         <div className="w-11/12 max-w-xl bg-white dark:bg-slate-900 rounded-lg p-4 shadow-xl border border-slate-200 dark:border-slate-700">
           <h3 className="text-lg font-bold mb-2 text-slate-800 dark:text-slate-200">Edit Quiz Prompt & Settings</h3>
           <label className="text-xs text-slate-600 dark:text-slate-400">Prompt</label>
-          {/* When editing the generator action (action-quiz) show original prompt as readonly
-              and display a live preview that reflects number and difficulty. For saved quiz
-              artifacts the prompt remains editable. */}
           <textarea
             value={editPrompt}
             onChange={(e) => setEditPrompt(e.target.value)}
